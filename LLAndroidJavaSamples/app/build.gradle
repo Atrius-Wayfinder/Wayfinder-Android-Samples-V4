@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    compileSdkVersion 35
+
+    defaultConfig {
+        applicationId "com.myco"
+        minSdkVersion 24
+        targetSdkVersion 35
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    namespace 'com.myco'
+}
+
+android {
+    buildFeatures {
+        buildConfig true
+    }
+}
+dependencies {
+    implementation 'com.google.android.material:material:1.2.1'
+    implementation 'com.locuslabs:locuslabs-android-sdk:4.2.1'
+}
+
+
