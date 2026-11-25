@@ -1,11 +1,18 @@
 {
   "places": [
     {
-    "behavior": "search",
-    "value": "coffee",
-    "name": "Search Coffee",
-    "icon": "ll_places_icon_coffee.png",
-    "normalColor": "290d0a"
+      "behavior": "poi",
+      "value": "4002660",
+      "name": "Departure Gate",
+      "icon": "ll_places_icon_gate.png",
+      "normalColor": "092ED0"
+    },
+    {
+      "behavior": "search",
+      "value": "check-in",
+      "name": "Check-In",
+      "icon": "ll_places_icon_ticketing.png",
+      "normalColor": "092ED0"
     }
   ]
 }

@@ -1,12 +1,12 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 buildscript {
-    ext.kotlin_version = '2.0.0'
+    ext.kotlin_version = '2.2.10'
     repositories {
         google()
-        jcenter()
+        mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.7.3'
+        classpath 'com.android.tools.build:gradle:8.13.0'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
 
         // NOTE: Do not place your application dependencies here; they belong
@@ -23,23 +23,16 @@ allprojects {
             name "GitLab"
             credentials(HttpHeaderCredentials) {
                 name = 'Deploy-Token'
-                value = gitLabDeployToken // gitLabDeployToken is a variable defined in gradle.properties, each LocusLabs customer receives their own
+                value = gitLabDeployToken // gitLabDeployToken is defined in gradle.properties; it is published by Atrius and is not a secret
             }
             authentication {
                 header(HttpHeaderAuthentication)
             }
         }
-        maven {
-            url 'https://jitpack.io'
-        }
-        maven {
-            allowInsecureProtocol = true
-            url 'http://dl.bintray.com/amulyakhare/maven'
-        }
     }
 }
 task clean(type: Delete) {
-    delete rootProject.buildDir
+    delete rootProject.layout.buildDirectory
 }
 
 

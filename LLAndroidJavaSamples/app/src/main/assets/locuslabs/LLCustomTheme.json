@@ -5,11 +5,11 @@
         "globalPrimaryButton": "#2266DD",
         "globalPrimaryButtonHover": "#124CB1",
         "globalPrimaryButtonText": "#FFFFFF",
-        "globalSecondary": "#999999",
+        "globalSecondary": "#888888",
         "globalSecondaryText": "#666666",
         "globalSecondaryButton": "#EBEBEB",
         "globalSecondaryButtonHover": "#D9D9D9",
-        "globalSecondaryButtonText": "#2266DD",
+        "globalSecondaryButtonText": "#092ED0",
         "globalBackground": "#FFFFFF",
         "globalOverlay": "#000000",
         "mapNavBackground": "#333333",
@@ -27,7 +27,7 @@
         "statusOnTimeAndOpenText": "#FFFFFF",
         "statusClosedDepartedArrivedOccupiedBackground": "#EBEBEB",
         "statusClosedDepartedArrivedOccupiedText": "#333333",
-        "statusSuccessBackground": "#229653"
+        "statusSuccessBackground": "#00662B"
     },
     "fonts": {
         "H1_Regular": {

@@ -8,12 +8,16 @@ import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.widget.ImageView
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
-import com.locuslabs.sdk.llprivate.llPublicDI
+import androidx.lifecycle.lifecycleScope
 import com.locuslabs.sdk.llpublic.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class POIButtonActivity : AppCompatActivity() {
 
@@ -28,43 +32,25 @@ class POIButtonActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.fullscreen_map)
 
+        SampleConfig.resetToDefaults()
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground)
         initializationAnimationView = findViewById(R.id.initializationAnimationView)
 
         initLocusMaps()
+        initBackHandling()
         initInitializationProgressIndicator()
         showInitializationProgressIndicator()
     }
 
-    override fun onStart() {
-        super.onStart()
-        llLocusMapsFragment.onStart()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        llLocusMapsFragment.onPause()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        llLocusMapsFragment.onStop()
-    }
-
-    override fun onLowMemory() {
-        super.onLowMemory()
-        llLocusMapsFragment.onLowMemory()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        llLocusMapsFragment.onResume()
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     override fun onDestroy() {
+
+        SampleConfig.clearListeners()
         super.onDestroy()
-        llLocusMapsFragment.onDestroy()
     }
 
     private fun initLocusMaps() {
@@ -168,31 +154,23 @@ class POIButtonActivity : AppCompatActivity() {
 
     private fun showVenue() {
 
-        val llVenueDatabase = LLVenueDatabase()
+        val venueID = "lax"
 
-        var venueListCallback = object : LLOnGetVenueListCallback {
-
-            override fun successCallback(venueList: LLVenueList) {
-
-                val venueID = "lax"
+        lifecycleScope.launch {
+            try {
+                // Get the venue list on a background thread (recommended), then show the venue on the main thread
+                val venueList = withContext(Dispatchers.IO) { LLVenueDatabase().getVenueList() }
 
                 val venueListEntry = venueList[venueID]
-                        ?: // A venue loading error occurred
-                        return
+                    ?: return@launch // The venue isn't available for this account
 
-                val llVenueAssetVersion = venueListEntry.assetVersion
-                val llVenueFiles = venueListEntry.files
+                llLocusMapsFragment.showVenue(venueID, venueListEntry.assetVersion, venueListEntry.files)
+            } catch (throwable: Throwable) {
 
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles)
-            }
-
-            override fun failureCallback(throwable: Throwable) {
-
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable)
             }
         }
-
-        llVenueDatabase.getVenueList(venueListCallback)
     }
 
     private fun initInitializationProgressIndicator() {
@@ -231,15 +209,17 @@ class POIButtonActivity : AppCompatActivity() {
         }
     }
 
-    override fun onBackPressed() {
+    private fun initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack()
-        }
-        else {
-
-            super.onBackPressed()
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        onBackPressedDispatcher.addCallback(this) {
+            if (llLocusMapsFragment.hasBackStackItems()) {
+                llLocusMapsFragment.popBackStack()
+            } else {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
         }
     }
 

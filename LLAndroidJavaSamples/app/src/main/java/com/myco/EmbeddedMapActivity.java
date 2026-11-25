@@ -40,6 +40,9 @@ import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import androidx.activity.OnBackPressedCallback;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.FRACTION_TO_PERCENT_CONVERSION_RATIO;
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.PROGRESS_BAR_FRACTION_FINISH;
@@ -52,11 +55,16 @@ public class EmbeddedMapActivity extends AppCompatActivity {
     private AnimationDrawable initializationAnimationDrawable;
     private boolean showVenueCalled;
 
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_embedded_map);
+
+        SampleConfig.resetToDefaults();
 
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground);
@@ -64,49 +72,20 @@ public class EmbeddedMapActivity extends AppCompatActivity {
 
         LLConfiguration.Companion.getSingleton().setHideMapControls(true);
         initLocusMaps();
+        initBackHandling();
         initInitializationProgressIndicator();
         showInitializationProgressIndicator();
     }
 
-    @Override
-    protected void onStart() {
-
-        super.onStart();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStart();
-    }
-
-    @Override
-    protected void onStop() {
-
-        super.onStop();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     @Override
     protected void onDestroy() {
+
+        backgroundExecutor.shutdown();
+        SampleConfig.clearListeners();
         super.onDestroy();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onDestroy();
-    }
-
-    @Override
-    public void onLowMemory() {
-
-        super.onLowMemory();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onLowMemory();
-    }
-
-    @Override
-    public void onPause() {
-
-        super.onPause();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-
-        super.onResume();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onResume();
     }
 
     private void initLocusMaps() {
@@ -166,7 +145,7 @@ public class EmbeddedMapActivity extends AppCompatActivity {
                     @Override
                     public void onPOIPhoneClicked(String phone) {
                         Intent intent = new Intent(Intent.ACTION_DIAL);
-                        intent.setData(Uri.parse(phone));
+                        intent.setData(Uri.parse("tel:" + phone));
                         startActivity(intent);
                     }
                 }
@@ -193,33 +172,30 @@ public class EmbeddedMapActivity extends AppCompatActivity {
 
     private void showVenue() {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
+        String venueID = "lax";
 
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then show the venue on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
-
-                String venueID = "lax";
 
                 LLVenueListEntry venueListEntry = llVenueList.get(venueID);
                 if (venueListEntry == null)  {
 
-                    // A venue loading error occurred
+                    // The venue isn't available for this account
                     return;
                 }
 
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
+                runOnUiThread(() -> llLocusMapsFragment.showVenue(venueID, venueListEntry.getAssetVersion(), venueListEntry.getFiles()));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable);
             }
-        });
+        }));
     }
 
     private void initInitializationProgressIndicator() {
@@ -257,17 +233,21 @@ public class EmbeddedMapActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onBackPressed() {
+    private void initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack();
-        }
-        else {
-
-            super.onBackPressed();
-        }
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (llLocusMapsFragment.hasBackStackItems()) {
+                    llLocusMapsFragment.popBackStack();
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+        });
     }
 
     private void mapReady() {

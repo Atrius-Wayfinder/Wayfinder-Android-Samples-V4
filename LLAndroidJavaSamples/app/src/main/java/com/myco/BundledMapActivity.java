@@ -40,6 +40,9 @@ import com.locuslabs.sdk.llpublic.LLVenueListEntry;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
+import androidx.activity.OnBackPressedCallback;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.FRACTION_TO_PERCENT_CONVERSION_RATIO;
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.PROGRESS_BAR_FRACTION_FINISH;
@@ -52,60 +55,36 @@ public class BundledMapActivity extends AppCompatActivity {
     private AnimationDrawable initializationAnimationDrawable;
     private boolean showVenueCalled;
 
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_fullscreen_map);
 
+        SampleConfig.resetToDefaults();
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground);
         initializationAnimationView = findViewById(R.id.initializationAnimationView);
 
         initLocusMaps();
+        initBackHandling();
         initInitializationProgressIndicator();
         showInitializationProgressIndicator();
     }
 
-    @Override
-    protected void onStart() {
-
-        super.onStart();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStart();
-    }
-
-    @Override
-    protected void onStop() {
-
-        super.onStop();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     @Override
     protected void onDestroy() {
+
+        backgroundExecutor.shutdown();
+        SampleConfig.clearListeners();
         super.onDestroy();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onDestroy();
-    }
-
-    @Override
-    public void onLowMemory() {
-
-        super.onLowMemory();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onLowMemory();
-    }
-
-    @Override
-    public void onPause() {
-
-        super.onPause();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-
-        super.onResume();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onResume();
     }
 
     private void initLocusMaps() {
@@ -165,7 +144,7 @@ public class BundledMapActivity extends AppCompatActivity {
                     @Override
                     public void onPOIPhoneClicked(String phone) {
                         Intent intent = new Intent(Intent.ACTION_DIAL);
-                        intent.setData(Uri.parse(phone));
+                        intent.setData(Uri.parse("tel:" + phone));
                         startActivity(intent);
                     }
                 }
@@ -192,57 +171,53 @@ public class BundledMapActivity extends AppCompatActivity {
 
     private void unpackMapPacksAndShowVenue() {
 
-        List<String> accountIdsForMapPacks = new ArrayList<String>();
+        // The map pack is supplied by Atrius (help@atrius.com) and goes in src/main/assets/locuslabs/.
+        // Keep the file exactly as delivered: it is named android-<ACCOUNT_ID>-<timestamp>.tar.xz,
+        // e.g. android-A11F4Y6SZRXH4X-2020-11-30T05:18:43.tar.xz
+        // Passing null as the map pack name installs the newest map pack found for the account ID.
+        // Install the map pack before the first call to getVenueList/showVenue.
+        String accountID = LLConfiguration.Companion.getSingleton().requireAccountID();
 
-        accountIdsForMapPacks.add(LLConfiguration.Companion.getSingleton().getAccountID());
-        for (int i = 0; i < accountIdsForMapPacks.size(); i++) {
-            String accountIdsForMapPack = accountIdsForMapPacks.get(i);
+        LLMapPackFinder.Companion.installMapPack(accountID, null, new LLOnUnpackCallback() {
+            @Override
+            public void onUnpack(boolean didInstall, Throwable throwable) {
 
-            LLOnUnpackCallback callback = new LLOnUnpackCallback() {
-                @Override
-                public void onUnpack(boolean b, Throwable throwable) {
-                    if (throwable != null) {
-                        Log.e("Log", "MapPack installation failed because: " +
-                                throwable.getMessage());
-                    } else {
-                        showVenue();
-                    }
+                if (throwable != null) {
+                    Log.e("Log", "MapPack installation failed because: " + throwable.getMessage());
                 }
-            };
 
-            LLMapPackFinder.Companion.installMapPack(accountIdsForMapPack, null, callback);
-        }
+                // Continue either way: if the map pack could not be installed, the venue is downloaded instead
+                showVenue();
+            }
+        });
     }
 
     private void showVenue() {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
+        String venueID = "lax";
 
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then show the venue on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
-
-                String venueID = "lax";
 
                 LLVenueListEntry venueListEntry = llVenueList.get(venueID);
                 if (venueListEntry == null)  {
 
-                    // A venue loading error occurred
+                    // The venue isn't available for this account
                     return;
                 }
 
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
+                runOnUiThread(() -> llLocusMapsFragment.showVenue(venueID, venueListEntry.getAssetVersion(), venueListEntry.getFiles()));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable);
             }
-        });
+        }));
     }
 
     private void initInitializationProgressIndicator() {
@@ -280,17 +255,21 @@ public class BundledMapActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onBackPressed() {
+    private void initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack();
-        }
-        else {
-
-            super.onBackPressed();
-        }
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (llLocusMapsFragment.hasBackStackItems()) {
+                    llLocusMapsFragment.popBackStack();
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+        });
     }
 
     private void mapReady() {

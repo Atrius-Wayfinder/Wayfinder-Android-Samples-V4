@@ -6,6 +6,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
@@ -39,11 +40,16 @@ import com.locuslabs.sdk.llpublic.LLVenueFiles;
 import com.locuslabs.sdk.llpublic.LLVenueList;
 import com.locuslabs.sdk.llpublic.LLVenueListEntry;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import androidx.activity.OnBackPressedCallback;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.FRACTION_TO_PERCENT_CONVERSION_RATIO;
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.PROGRESS_BAR_FRACTION_FINISH;
@@ -56,60 +62,36 @@ public class DirectionsStepsETAActivity extends AppCompatActivity {
     private AnimationDrawable initializationAnimationDrawable;
     private boolean showVenueCalled;
 
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_fullscreen_map);
 
+        SampleConfig.resetToDefaults();
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground);
         initializationAnimationView = findViewById(R.id.initializationAnimationView);
 
         initLocusMaps();
+        initBackHandling();
         initInitializationProgressIndicator();
         showInitializationProgressIndicator();
     }
 
-    @Override
-    protected void onStart() {
-
-        super.onStart();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStart();
-    }
-
-    @Override
-    protected void onStop() {
-
-        super.onStop();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     @Override
     protected void onDestroy() {
+
+        backgroundExecutor.shutdown();
+        SampleConfig.clearListeners();
         super.onDestroy();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onDestroy();
-    }
-
-    @Override
-    public void onLowMemory() {
-
-        super.onLowMemory();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onLowMemory();
-    }
-
-    @Override
-    public void onPause() {
-
-        super.onPause();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-
-        super.onResume();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onResume();
     }
 
     private void initLocusMaps() {
@@ -169,7 +151,7 @@ public class DirectionsStepsETAActivity extends AppCompatActivity {
                     @Override
                     public void onPOIPhoneClicked(String phone) {
                         Intent intent = new Intent(Intent.ACTION_DIAL);
-                        intent.setData(Uri.parse(phone));
+                        intent.setData(Uri.parse("tel:" + phone));
                         startActivity(intent);
                     }
                 }
@@ -196,33 +178,30 @@ public class DirectionsStepsETAActivity extends AppCompatActivity {
 
     private void showVenue() {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
+        String venueID = "lax";
 
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then show the venue on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
-
-                String venueID = "lax";
 
                 LLVenueListEntry venueListEntry = llVenueList.get(venueID);
                 if (venueListEntry == null)  {
 
-                    // A venue loading error occurred
+                    // The venue isn't available for this account
                     return;
                 }
 
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
+                runOnUiThread(() -> llLocusMapsFragment.showVenue(venueID, venueListEntry.getAssetVersion(), venueListEntry.getFiles()));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable);
             }
-        });
+        }));
     }
 
     private void initInitializationProgressIndicator() {
@@ -260,58 +239,69 @@ public class DirectionsStepsETAActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onBackPressed() {
+    private void initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack();
-        }
-        else {
-
-            super.onBackPressed();
-        }
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (llLocusMapsFragment.hasBackStackItems()) {
+                    llLocusMapsFragment.popBackStack();
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+        });
     }
 
     private void mapReady() {
 
         // This is the appropriate place to take most actions that affect the map
 
+        String venueID = "lax";
+        LLNavAccessibilityType accessibilityType = LLNavAccessibilityType.Direct;
         Map<String, List<String>> securityQueueTypes = new HashMap<>();
-        LLNavigationDatabase navDB = new LLNavigationDatabase();
 
-        LLNavigationPoint startPoint =  new LLNavigationPointForPOI("1025");
-        LLNavigationPoint endPoint =  new LLNavigationPointForPOI("566");
+        // Optional - specify a security lane
+        // List<String> laneTypes = new ArrayList<>();
+        // laneTypes.add("general"); // other options include, tsapre or clear
+        // securityQueueTypes.put("SecurityLane", laneTypes);
 
-        // Note that another signature of this method takes LLNavigationPoints in place of POI IDs. This method can also navigate from "current location" using the LLNavigationPointForCurrentLocation class
-        navDB.getDirections("lax", startPoint, endPoint, LLNavAccessibilityType.Direct, securityQueueTypes, new LLOnGetDirectionsCallback() {
+        // Points can also be LLNavigationPointForCurrentLocation or any other LLNavigationPoint
+        // Note passing only a single point in waypoints is equivalent to a traditional single origin and single destination route
+        LLNavigationPoint startPoint = new LLNavigationPointForPOI("1025"); // Club 42 Tequila Bar & Bites
+        List<LLNavigationPoint> waypoints = Arrays.asList(
+                new LLNavigationPointForPOI("870"), // Starbucks near Gate 60
+                new LLNavigationPointForPOI("566")  // Gate 77
+        );
+
+        // Fetch the route to report its steps and ETA. Data APIs can run on a background thread (recommended),
+        // then UI work is posted back to the main thread
+        backgroundExecutor.execute(() -> new LLNavigationDatabase().getMultipointDirections(venueID, startPoint, waypoints, accessibilityType, securityQueueTypes, new LLOnGetDirectionsCallback() {
             @Override
-            public void successCallback(LLNavPath llNavPath) {
-
-                String message = "ETA(secs): " +llNavPath.transitTime() +"\n\nSegments:\n\n";
-
-
-                for (LLSegment segment: llNavPath.segments(Locale.getDefault())) {
-
-                    message = message + segment.toString() +"\n\n";
+            public void successCallback(LLNavPath navPath) {
+                List<String> steps = new ArrayList<>();
+                for (LLSegment segment : navPath.segments(Locale.getDefault())) {
+                    steps.add(String.format("%s %s (%.0f m, %.1f min)", segment.getInstruction(), segment.getDestination(), segment.getDistanceMeters(), segment.getEstimatedTimeMinutes()));
                 }
-
-                AlertDialog.Builder dialog = new AlertDialog.Builder(DirectionsStepsETAActivity.this);
-                dialog.setMessage(message);
-                dialog.setTitle("Obtained Directions");
-                dialog.setPositiveButton("OK", null);
-                dialog.create().show();
+                String message = String.format("ETA: %.1f min\n\nSteps:\n\n%s", navPath.transitTime(), TextUtils.join("\n\n", steps));
+                runOnUiThread(() -> showDialog("Obtained Directions", message));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
-
-                AlertDialog.Builder dialog = new AlertDialog.Builder(DirectionsStepsETAActivity.this);
-                dialog.setMessage(throwable.getLocalizedMessage());
-                dialog.setTitle("Directions Error");
-                dialog.setPositiveButton("OK", null);
-                dialog.create().show();
+                runOnUiThread(() -> showDialog("Directions Error", throwable.getLocalizedMessage()));
             }
-        });
+        }));
+    }
+
+    private void showDialog(String title, String message) {
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
     }
 }

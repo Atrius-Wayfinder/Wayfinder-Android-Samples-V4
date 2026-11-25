@@ -7,11 +7,15 @@ import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.widget.ImageView
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
-import com.locuslabs.sdk.llprivate.llPublicDI
+import androidx.lifecycle.lifecycleScope
 import com.locuslabs.sdk.llpublic.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class CustomActionsActivity : AppCompatActivity() {
 
@@ -26,44 +30,66 @@ class CustomActionsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.fullscreen_map)
 
+        SampleConfig.resetToDefaults()
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground)
         initializationAnimationView = findViewById(R.id.initializationAnimationView)
 
-        LLConfiguration.singleton.customActionsFilePathRelativeToAssetsDir = "locuslabs/LLCustomActions.json"
+        initCustomActions()
         initLocusMaps()
+        initBackHandling()
         initInitializationProgressIndicator()
         showInitializationProgressIndicator()
     }
 
-    override fun onStart() {
-        super.onStart()
-        llLocusMapsFragment.onStart()
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
-    override fun onPause() {
-        super.onPause()
-        llLocusMapsFragment.onPause()
-    }
+    private fun initCustomActions() {
 
-    override fun onStop() {
-        super.onStop()
-        llLocusMapsFragment.onStop()
-    }
+        // Custom actions must be configured before showVenue. The SDK picks the actions once per venue load,
+        // each source below replacing the previous one:
+        // 1. the SDK's default actions, 2. actions in the venue data, 3. your JSON file (if set), 4. your provider (if it returns a list)
 
-    override fun onLowMemory() {
-        super.onLowMemory()
-        llLocusMapsFragment.onLowMemory()
-    }
+        // Option 1 - a JSON file in your assets (see assets/locuslabs/LLCustomActions.json).
+        // Here it's used for any venue where the provider below returns null
+        LLConfiguration.singleton.customActionsFilePathRelativeToAssetsDir = "locuslabs/LLCustomActions.json"
 
-    override fun onResume() {
-        super.onResume()
-        llLocusMapsFragment.onResume()
+        // Option 2 - a provider (SDK 4.2.5+). getCustomActions is a suspend function called on a background
+        // thread during venue load, so it can fetch actions from your own backend
+        LLDependencyInjector.singleton.customActionsProvider = object : LLCustomActionsProvider {
+            override suspend fun getCustomActions(context: LLCustomActionsContext): List<LLCustomActionDefinition>? {
+
+                // Return null to fall back to the JSON file / venue data / SDK defaults, or an empty list to show no actions
+                if (context.venueId != "lax") return null
+
+                return listOf(
+                    // Show a POI: 4002660 is gate 68A at lax
+                    LLCustomActionDefinition(
+                        behavior = LLCustomActionBehavior.POI,
+                        value = "4002660",
+                        name = "Departure Gate",
+                        icon = "ll_places_icon_gate", // name of a drawable resource
+                        normalColorHex = "092ED0"
+                    ),
+                    // Run a search
+                    LLCustomActionDefinition(
+                        behavior = LLCustomActionBehavior.Search,
+                        value = "check-in",
+                        name = "Check-In",
+                        icon = "ll_places_icon_ticketing",
+                        normalColorHex = "092ED0"
+                    )
+                )
+            }
+        }
     }
 
     override fun onDestroy() {
+
+        SampleConfig.clearListeners()
         super.onDestroy()
-        llLocusMapsFragment.onDestroy()
     }
 
     private fun initLocusMaps() {
@@ -135,31 +161,23 @@ class CustomActionsActivity : AppCompatActivity() {
 
     private fun showVenue() {
 
-        val llVenueDatabase = LLVenueDatabase()
+        val venueID = "lax"
 
-        var venueListCallback = object : LLOnGetVenueListCallback {
-
-            override fun successCallback(venueList: LLVenueList) {
-
-                val venueID = "lax"
+        lifecycleScope.launch {
+            try {
+                // Get the venue list on a background thread (recommended), then show the venue on the main thread
+                val venueList = withContext(Dispatchers.IO) { LLVenueDatabase().getVenueList() }
 
                 val venueListEntry = venueList[venueID]
-                        ?: // A venue loading error occurred
-                        return
+                    ?: return@launch // The venue isn't available for this account
 
-                val llVenueAssetVersion = venueListEntry.assetVersion
-                val llVenueFiles = venueListEntry.files
+                llLocusMapsFragment.showVenue(venueID, venueListEntry.assetVersion, venueListEntry.files)
+            } catch (throwable: Throwable) {
 
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles)
-            }
-
-            override fun failureCallback(throwable: Throwable) {
-
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable)
             }
         }
-
-        llVenueDatabase.getVenueList(venueListCallback)
     }
 
     private fun initInitializationProgressIndicator() {
@@ -198,15 +216,17 @@ class CustomActionsActivity : AppCompatActivity() {
         }
     }
 
-    override fun onBackPressed() {
+    private fun initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack()
-        }
-        else {
-
-            super.onBackPressed()
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        onBackPressedDispatcher.addCallback(this) {
+            if (llLocusMapsFragment.hasBackStackItems()) {
+                llLocusMapsFragment.popBackStack()
+            } else {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
         }
     }
 

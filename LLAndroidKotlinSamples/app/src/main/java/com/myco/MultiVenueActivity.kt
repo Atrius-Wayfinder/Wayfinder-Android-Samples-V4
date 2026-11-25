@@ -10,14 +10,18 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.DividerItemDecoration
 import androidx.recyclerview.widget.RecyclerView
 import com.locuslabs.sdk.llpublic.*
-import java.util.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 class MultiVenueActivity : AppCompatActivity() {
@@ -34,6 +38,8 @@ class MultiVenueActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_multi_venue)
 
+        SampleConfig.resetToDefaults()
+
         mapContainer = findViewById(R.id.map_container)
 
         venueListRecyclerView = findViewById(R.id.recycler_view)
@@ -43,57 +49,33 @@ class MultiVenueActivity : AppCompatActivity() {
 
         getVenueList()
         initLocusMaps()
+        initBackHandling()
     }
 
-    override fun onStart() {
-        super.onStart()
-        llLocusMapsFragment.onStart()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        llLocusMapsFragment.onPause()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        llLocusMapsFragment.onStop()
-    }
-
-    override fun onLowMemory() {
-        super.onLowMemory()
-        llLocusMapsFragment.onLowMemory()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        llLocusMapsFragment.onResume()
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     override fun onDestroy() {
+
+        SampleConfig.clearListeners()
         super.onDestroy()
-        llLocusMapsFragment.onDestroy()
     }
 
     private fun getVenueList() {
 
-        val llVenueDatabase = LLVenueDatabase()
-        llVenueDatabase.getVenueList(object : LLOnGetVenueListCallback {
-            override fun successCallback(venueList: LLVenueList) {
-                val venueListEntries = ArrayList<LLVenueListEntry>()
-                for ((_, value) in venueList) {
-                    venueListEntries.add(value)
-                }
-                val venueListAdapter: VenueListAdapter = VenueListAdapter(venueListEntries)
-                venueListRecyclerView.adapter = venueListAdapter
-            }
+        lifecycleScope.launch {
+            try {
+                // Get the venue list on a background thread (recommended), then update the UI on the main thread
+                val venueList = withContext(Dispatchers.IO) { LLVenueDatabase().getVenueList() }
 
-            override fun failureCallback(throwable: Throwable) {
+                val venueListEntries = ArrayList(venueList.values)
+                venueListRecyclerView.adapter = VenueListAdapter(venueListEntries)
+            } catch (throwable: Throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
                 Log.d("Error", "Failed to get venues:" + throwable.localizedMessage)
             }
-        })
+        }
     }
 
     private fun initLocusMaps() {
@@ -144,6 +126,7 @@ class MultiVenueActivity : AppCompatActivity() {
         LLDependencyInjector.singleton.onPOIPhoneClickedListener = object : LLOnPOIPhoneClickedListener {
             override fun onPOIPhoneClicked(phone: String) {
                 val intent = Intent(Intent.ACTION_DIAL)
+                intent.data = Uri.parse("tel:$phone")
                 startActivity(intent)
             }
         }
@@ -211,20 +194,26 @@ class MultiVenueActivity : AppCompatActivity() {
         }
     }
 
-    override fun onBackPressed() {
+    private fun initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
+        onBackPressedDispatcher.addCallback(this) {
+            if (llLocusMapsFragment.hasBackStackItems()) {
 
-            llLocusMapsFragment.popBackStack()
-        }
-        else if (mapContainer.visibility == View.VISIBLE) {
+                // Let the map close its own screens (POI view, search, directions...) first
+                llLocusMapsFragment.popBackStack()
+            }
+            else if (mapContainer.visibility == View.VISIBLE) {
 
-            getVenueList()
-            mapContainer.visibility = View.INVISIBLE
-        }
-        else {
+                // Then go back from the map to the venue list
+                getVenueList()
+                mapContainer.visibility = View.INVISIBLE
+            }
+            else {
 
-            super.onBackPressed()
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
         }
     }
 

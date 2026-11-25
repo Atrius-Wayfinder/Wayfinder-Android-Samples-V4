@@ -5,6 +5,7 @@ import android.graphics.drawable.AnimationDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
@@ -27,6 +28,9 @@ import com.locuslabs.sdk.llpublic.LLVenueDatabase;
 import com.locuslabs.sdk.llpublic.LLVenueFiles;
 import com.locuslabs.sdk.llpublic.LLVenueList;
 import com.locuslabs.sdk.llpublic.LLVenueListEntry;
+import androidx.activity.OnBackPressedCallback;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.FRACTION_TO_PERCENT_CONVERSION_RATIO;
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.PROGRESS_BAR_FRACTION_FINISH;
@@ -39,60 +43,36 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
     private AnimationDrawable initializationAnimationDrawable;
     private boolean showVenueCalled;
     
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_fullscreen_map);
 
+        SampleConfig.resetToDefaults();
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground);
         initializationAnimationView = findViewById(R.id.initializationAnimationView);
 
         initLocusMaps();
+        initBackHandling();
         initInitializationProgressIndicator();
         showInitializationProgressIndicator();
     }
 
-    @Override
-    protected void onStart() {
-
-        super.onStart();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStart();
-    }
-
-    @Override
-    protected void onStop() {
-
-        super.onStop();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     @Override
     protected void onDestroy() {
+
+        backgroundExecutor.shutdown();
+        SampleConfig.clearListeners();
         super.onDestroy();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onDestroy();
-    }
-
-    @Override
-    public void onLowMemory() {
-
-        super.onLowMemory();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onLowMemory();
-    }
-
-    @Override
-    public void onPause() {
-
-        super.onPause();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-
-        super.onResume();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onResume();
     }
 
     private void initLocusMaps() {
@@ -152,7 +132,7 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
                     @Override
                     public void onPOIPhoneClicked(String phone) {
                         Intent intent = new Intent(Intent.ACTION_DIAL);
-                        intent.setData(Uri.parse(phone));
+                        intent.setData(Uri.parse("tel:" + phone));
                         startActivity(intent);
                     }
                 }
@@ -179,33 +159,30 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
 
     private void showVenue() {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
+        String venueID = "lax";
 
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then show the venue on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
-
-                String venueID = "lax";
 
                 LLVenueListEntry venueListEntry = llVenueList.get(venueID);
                 if (venueListEntry == null)  {
 
-                    // A venue loading error occurred
+                    // The venue isn't available for this account
                     return;
                 }
 
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
+                runOnUiThread(() -> llLocusMapsFragment.showVenue(venueID, venueListEntry.getAssetVersion(), venueListEntry.getFiles()));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable);
             }
-        });
+        }));
     }
 
     private void initInitializationProgressIndicator() {
@@ -243,23 +220,27 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onBackPressed() {
+    private void initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack();
-        }
-        else {
-
-            super.onBackPressed();
-        }
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (llLocusMapsFragment.hasBackStackItems()) {
+                    llLocusMapsFragment.popBackStack();
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+        });
     }
 
     private void mapReady() {
 
         // Start mocking external location
-        new Handler().postDelayed(new Runnable() {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
 
@@ -273,12 +254,14 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
         LLLatLng latLng = new LLLatLng(lat, lon);
         String locusLabsFloorID = locusLabsFloorIDForExternalFloorID(floorID);
 
+        // Note: accuracy and heading are not used. In SDK 4.2.8 setCurrentLocation takes only a position and a
+        // Wayfinder level ID (an overload taking horizontalAccuracyMeters is coming in 4.2.9)
         llLocusMapsFragment.setCurrentLocation(latLng, locusLabsFloorID);
     }
 
     private String locusLabsFloorIDForExternalFloorID(String floorID) {
 
-        // If you are not able to compile this mapping table yourself, please send us a list (help@locuslabs.com) of
+        // If you are not able to compile this mapping table yourself, please send us a list (help@atrius.com) of
         // the building names and associated floor ids as provided by your external mapping provider and we will compile the mapping table
 
         String locusLabsFloorID = null;
@@ -296,7 +279,7 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
     private void mockExternalLocationData() {
 
         // Position 1 (Initial - DFS Duty Free)
-        new Handler().postDelayed(new Runnable() {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
 
@@ -305,7 +288,7 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
         }, 1000);
 
         // Position 2 (2 secs later)
-        new Handler().postDelayed(new Runnable() {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
 
@@ -314,7 +297,7 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
         }, 3000);
 
         // Position 3 (4 secs later)
-        new Handler().postDelayed(new Runnable() {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
 
@@ -323,7 +306,7 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
         }, 5000);
 
         // Position 4 (6 secs later)
-        new Handler().postDelayed(new Runnable() {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
 
@@ -332,7 +315,7 @@ public class ExternalLocationDataActivity extends AppCompatActivity {
         }, 7000);
 
         // Position 5 (8 secs later - Destination - Gate 64B)
-        new Handler().postDelayed(new Runnable() {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
 

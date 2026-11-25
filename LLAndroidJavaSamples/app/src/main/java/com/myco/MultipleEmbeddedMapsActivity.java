@@ -6,7 +6,6 @@ import android.os.Bundle;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
@@ -20,13 +19,16 @@ import com.locuslabs.sdk.llpublic.LLNavigationPointForPOI;
 import com.locuslabs.sdk.llpublic.LLOnGetVenueListCallback;
 import com.locuslabs.sdk.llpublic.LLOnProgressListener;
 import com.locuslabs.sdk.llpublic.LLVenueDatabase;
-import com.locuslabs.sdk.llpublic.LLVenueFiles;
 import com.locuslabs.sdk.llpublic.LLVenueList;
 import com.locuslabs.sdk.llpublic.LLVenueListEntry;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MultipleEmbeddedMapsActivity extends AppCompatActivity {
 
@@ -36,21 +38,22 @@ public class MultipleEmbeddedMapsActivity extends AppCompatActivity {
     private LLLocusMapsFragment llLocusMapsFragment4;
     private LLLocusMapsFragment llLocusMapsFragment5;
 
-    private boolean showVenue1Called;
-    private boolean showVenue2Called;
-    private boolean showVenue3Called;
-    private boolean showVenue4Called;
-    private boolean showVenue5Called;
+    private final Set<LLLocusMapsFragment> mapFragmentsShown = new HashSet<>();
 
     private String venueID = "lax";
 
     private int loadCount = 0;
+
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.multiple_embedded_maps);
+
+        SampleConfig.resetToDefaults();
 
         LLConfiguration.Companion.getSingleton().setHideMapControls(true);
         LLConfiguration.Companion.getSingleton().setHideDirectionsSummaryControls(true);
@@ -65,6 +68,17 @@ public class MultipleEmbeddedMapsActivity extends AppCompatActivity {
         initLocusMaps();
     }
 
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to the LLLocusMapsFragments, each fragment handles them itself
+
+    @Override
+    protected void onDestroy() {
+
+        backgroundExecutor.shutdown();
+        SampleConfig.clearListeners();
+        super.onDestroy();
+    }
+
     private void initLocusMaps() {
 
         getSupportFragmentManager().registerFragmentLifecycleCallbacks(new FragmentManager.FragmentLifecycleCallbacks() {
@@ -72,30 +86,10 @@ public class MultipleEmbeddedMapsActivity extends AppCompatActivity {
             public void onFragmentStarted(@NonNull FragmentManager fm, @NonNull Fragment f) {
                 super.onFragmentStarted(fm, f);
 
-                if (f == llLocusMapsFragment1 && !showVenue1Called) {
+                // Show the venue in each map once its fragment has started
+                if (f instanceof LLLocusMapsFragment && mapFragmentsShown.add((LLLocusMapsFragment) f)) {
 
-                    showVenue1Called = true;
-                    showVenue1();
-                }
-                else if (f == llLocusMapsFragment2 && !showVenue2Called) {
-
-                    showVenue2Called = true;
-                    showVenue2();
-                }
-                else if (f == llLocusMapsFragment3 && !showVenue3Called) {
-
-                    showVenue3Called = true;
-                    showVenue3();
-                }
-                else if (f == llLocusMapsFragment4 && !showVenue4Called) {
-
-                    showVenue4Called = true;
-                    showVenue4();
-                }
-                else if (f == llLocusMapsFragment5 && !showVenue5Called) {
-
-                    showVenue5Called = true;
-                    showVenue5();
+                    showVenue((LLLocusMapsFragment) f);
                 }
             }
         }, false);
@@ -108,6 +102,7 @@ public class MultipleEmbeddedMapsActivity extends AppCompatActivity {
                         // Map Ready
                         if (PROGRESS_BAR_FRACTION_FINISH == fractionComplete) {
 
+                           // The listener is shared by all maps, so count the maps that finished loading
                            loadCount++;
                            if (loadCount == 5) { // 5 is the number of embedded maps
 
@@ -119,149 +114,30 @@ public class MultipleEmbeddedMapsActivity extends AppCompatActivity {
         );
     }
 
-    private void showVenue1() {
+    private void showVenue(LLLocusMapsFragment llLocusMapsFragment) {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
-
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then show the venue on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
 
                 LLVenueListEntry venueListEntry = llVenueList.get(venueID);
                 if (venueListEntry == null)  {
 
-                    // A venue loading error occurred
+                    // The venue isn't available for this account
                     return;
                 }
 
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment1.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
+                runOnUiThread(() -> llLocusMapsFragment.showVenue(venueID, venueListEntry.getAssetVersion(), venueListEntry.getFiles()));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable);
             }
-        });
-    }
-
-    private void showVenue2() {
-
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
-
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
-            @Override
-            public void successCallback(LLVenueList llVenueList) {
-
-                LLVenueListEntry venueListEntry = llVenueList.get(venueID);
-                if (venueListEntry == null)  {
-
-                    // A venue loading error occurred
-                    return;
-                }
-
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment2.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
-            }
-
-            @Override
-            public void failureCallback(Throwable throwable) {
-
-                // Failed to get venue details
-            }
-        });
-    }
-
-    private void showVenue3() {
-
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
-
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
-            @Override
-            public void successCallback(LLVenueList llVenueList) {
-
-                LLVenueListEntry venueListEntry = llVenueList.get(venueID);
-                if (venueListEntry == null)  {
-
-                    // A venue loading error occurred
-                    return;
-                }
-
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment3.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
-            }
-
-            @Override
-            public void failureCallback(Throwable throwable) {
-
-                // Failed to get venue details
-            }
-        });
-    }
-
-    private void showVenue4() {
-
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
-
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
-            @Override
-            public void successCallback(LLVenueList llVenueList) {
-
-                LLVenueListEntry venueListEntry = llVenueList.get(venueID);
-                if (venueListEntry == null)  {
-
-                    // A venue loading error occurred
-                    return;
-                }
-
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment4.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
-            }
-
-            @Override
-            public void failureCallback(Throwable throwable) {
-
-                // Failed to get venue details
-            }
-        });
-    }
-
-    private void showVenue5() {
-
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
-
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
-            @Override
-            public void successCallback(LLVenueList llVenueList) {
-
-                LLVenueListEntry venueListEntry = llVenueList.get(venueID);
-                if (venueListEntry == null)  {
-
-                    // A venue loading error occurred
-                    return;
-                }
-
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment5.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
-            }
-
-            @Override
-            public void failureCallback(Throwable throwable) {
-
-                // Failed to get venue details
-            }
-        });
+        }));
     }
 
     private void mapsReady() {

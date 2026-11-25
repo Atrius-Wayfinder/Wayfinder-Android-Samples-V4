@@ -3,12 +3,12 @@ plugins {
 }
 
 android {
-    compileSdkVersion 35
+    compileSdkVersion "android-37.0" // the Wayfinder SDK 4.2.8 requires compileSdk 37
 
     defaultConfig {
         applicationId "com.myco"
         minSdkVersion 24
-        targetSdkVersion 35
+        targetSdkVersion 37
         versionCode 1
         versionName "1.0"
 
@@ -21,9 +21,10 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+    // Gradle must run on JDK 21 (the SDK is compiled to Java 21 bytecode); the app itself can target 17
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
     namespace 'com.myco'
 }
@@ -34,8 +35,9 @@ android {
     }
 }
 dependencies {
-    implementation 'com.google.android.material:material:1.2.1'
-    implementation 'com.locuslabs:locuslabs-android-sdk:4.2.1'
+    implementation 'androidx.activity:activity:1.13.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'com.locuslabs:locuslabs-android-sdk:4.2.8'
 }
 
 

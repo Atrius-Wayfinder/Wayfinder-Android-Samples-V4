@@ -37,9 +37,13 @@ import com.locuslabs.sdk.llpublic.LLVenueListEntry;
 
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import androidx.activity.OnBackPressedCallback;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.FRACTION_TO_PERCENT_CONVERSION_RATIO;
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.PROGRESS_BAR_FRACTION_FINISH;
@@ -52,60 +56,36 @@ public class SearchGeneralActivity extends AppCompatActivity {
     private AnimationDrawable initializationAnimationDrawable;
     private boolean showVenueCalled;
 
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_fullscreen_map);
 
+        SampleConfig.resetToDefaults();
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground);
         initializationAnimationView = findViewById(R.id.initializationAnimationView);
 
         initLocusMaps();
+        initBackHandling();
         initInitializationProgressIndicator();
         showInitializationProgressIndicator();
     }
 
-    @Override
-    protected void onStart() {
-
-        super.onStart();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStart();
-    }
-
-    @Override
-    protected void onStop() {
-
-        super.onStop();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     @Override
     protected void onDestroy() {
+
+        backgroundExecutor.shutdown();
+        SampleConfig.clearListeners();
         super.onDestroy();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onDestroy();
-    }
-
-    @Override
-    public void onLowMemory() {
-
-        super.onLowMemory();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onLowMemory();
-    }
-
-    @Override
-    public void onPause() {
-
-        super.onPause();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-
-        super.onResume();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onResume();
     }
 
     private void initLocusMaps() {
@@ -165,7 +145,7 @@ public class SearchGeneralActivity extends AppCompatActivity {
                     @Override
                     public void onPOIPhoneClicked(String phone) {
                         Intent intent = new Intent(Intent.ACTION_DIAL);
-                        intent.setData(Uri.parse(phone));
+                        intent.setData(Uri.parse("tel:" + phone));
                         startActivity(intent);
                     }
                 }
@@ -192,33 +172,30 @@ public class SearchGeneralActivity extends AppCompatActivity {
 
     private void showVenue() {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
+        String venueID = "lax";
 
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then show the venue on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
-
-                String venueID = "lax";
 
                 LLVenueListEntry venueListEntry = llVenueList.get(venueID);
                 if (venueListEntry == null)  {
 
-                    // A venue loading error occurred
+                    // The venue isn't available for this account
                     return;
                 }
 
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
+                runOnUiThread(() -> llLocusMapsFragment.showVenue(venueID, venueListEntry.getAssetVersion(), venueListEntry.getFiles()));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable);
             }
-        });
+        }));
     }
 
     private void initInitializationProgressIndicator() {
@@ -256,47 +233,57 @@ public class SearchGeneralActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onBackPressed() {
+    private void initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack();
-        }
-        else {
-
-            super.onBackPressed();
-        }
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (llLocusMapsFragment.hasBackStackItems()) {
+                    llLocusMapsFragment.popBackStack();
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+        });
     }
 
     private void mapReady() {
 
         LLPOIDatabase poiDatabase = new LLPOIDatabase();
-        List<String> searchTerms = new ArrayList<>();
-        searchTerms.add("restaurant");
+        List<String> searchTerms = Collections.singletonList("restaurant");
 
-        poiDatabase.getSearchResults("lax", Collections.singletonList(searchTerms), null, null, null, Locale.getDefault(), new LLOnGetSearchResultsCallback() {
+        // Data APIs can run on a background thread (recommended), then UI work is posted back to the main thread
+        backgroundExecutor.execute(() -> poiDatabase.getSearchResults("lax", Collections.singletonList(searchTerms), null, null, null, Locale.getDefault(), new LLOnGetSearchResultsCallback() {
             @Override
-            public void successCallback(List<LLPOI> list) {
+            public void successCallback(List<LLPOI> pois) {
 
-                String message = "";
-                for (LLPOI poi: list) {
+                StringBuilder message = new StringBuilder();
+                for (LLPOI poi: pois) {
 
-                    message = message +poi.getName() +"\n";
+                    message.append(poi.getName()).append("\n");
                 }
 
-                AlertDialog.Builder dialog = new AlertDialog.Builder(SearchGeneralActivity.this);
-                dialog.setMessage(message);
-                dialog.setTitle("Search Results");
-                dialog.setPositiveButton("OK", null);
-                dialog.create().show();
+                runOnUiThread(() -> showResults("Search Results", message.toString()));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
                 // Handle any error
+                Log.e("LOG", "Search failed", throwable);
             }
-        });
+        }));
+    }
+
+    private void showResults(String title, String message) {
+
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this);
+        dialog.setMessage(message);
+        dialog.setTitle(title);
+        dialog.setPositiveButton("OK", null);
+        dialog.create().show();
     }
 }

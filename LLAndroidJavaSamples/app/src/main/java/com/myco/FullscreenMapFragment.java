@@ -4,12 +4,15 @@ import android.content.Intent;
 import android.graphics.drawable.AnimationDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
@@ -18,17 +21,17 @@ import androidx.fragment.app.FragmentManager;
 import com.locuslabs.sdk.llpublic.LLDependencyInjector;
 import com.locuslabs.sdk.llpublic.LLLocusMapsFragment;
 import com.locuslabs.sdk.llpublic.LLOnFailureListener;
-import com.locuslabs.sdk.llpublic.LLOnGetVenueDetailsCallback;
 import com.locuslabs.sdk.llpublic.LLOnGetVenueListCallback;
 import com.locuslabs.sdk.llpublic.LLOnPOIPhoneClickedListener;
 import com.locuslabs.sdk.llpublic.LLOnPOIURLClickedListener;
 import com.locuslabs.sdk.llpublic.LLOnProgressListener;
 import com.locuslabs.sdk.llpublic.LLOnWarningListener;
-import com.locuslabs.sdk.llpublic.LLVenue;
 import com.locuslabs.sdk.llpublic.LLVenueDatabase;
-import com.locuslabs.sdk.llpublic.LLVenueFiles;
 import com.locuslabs.sdk.llpublic.LLVenueList;
 import com.locuslabs.sdk.llpublic.LLVenueListEntry;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.FRACTION_TO_PERCENT_CONVERSION_RATIO;
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.PROGRESS_BAR_FRACTION_FINISH;
@@ -40,6 +43,11 @@ public class FullscreenMapFragment extends Fragment {
     private ImageView initializationAnimationView;
     private AnimationDrawable initializationAnimationDrawable;
     private boolean showVenueCalled;
+    private FragmentManager.FragmentLifecycleCallbacks mapLifecycleCallbacks;
+
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     @Nullable
     @Override
@@ -57,45 +65,33 @@ public class FullscreenMapFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
 
         super.onViewCreated(view, savedInstanceState);
+        SampleConfig.resetToDefaults();
         initLocusMaps();
+        initBackHandling();
     }
 
-    @Override
-    public void onStart() {
-
-        super.onStart();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStart();
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     @Override
-    public void onPause() {
-        super.onPause();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onPause();
-    }
+    public void onDestroyView() {
 
-    @Override
-    public void onStop() {
-        super.onStop();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
-
-    @Override
-    public void onLowMemory() {
-        super.onLowMemory();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
-
-    @Override
-    public void onResume() {
-
-        super.onResume();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onResume();
+        // This fragment's view (and the map's view inside it) is destroyed, e.g. when the fragment is replaced and
+        // added to the back stack. Reset the flag so showVenue is called again for the new view when the user returns
+        if (mapLifecycleCallbacks != null) {
+            getChildFragmentManager().unregisterFragmentLifecycleCallbacks(mapLifecycleCallbacks);
+            mapLifecycleCallbacks = null;
+        }
+        showVenueCalled = false;
+        SampleConfig.clearListeners();
+        super.onDestroyView();
     }
 
     @Override
     public void onDestroy() {
+
+        backgroundExecutor.shutdown();
         super.onDestroy();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onDestroy();
     }
 
     private void initLocusMaps() {
@@ -105,7 +101,7 @@ public class FullscreenMapFragment extends Fragment {
         initInitializationProgressIndicator();
         showInitializationProgressIndicator();
 
-        getChildFragmentManager().registerFragmentLifecycleCallbacks(new FragmentManager.FragmentLifecycleCallbacks() {
+        mapLifecycleCallbacks = new FragmentManager.FragmentLifecycleCallbacks() {
             @Override
             public void onFragmentStarted(@NonNull FragmentManager fm, @NonNull Fragment f) {
                 super.onFragmentStarted(fm, f);
@@ -116,7 +112,8 @@ public class FullscreenMapFragment extends Fragment {
                     showVenue();
                 }
             }
-        }, false);
+        };
+        getChildFragmentManager().registerFragmentLifecycleCallbacks(mapLifecycleCallbacks, false);
 
         LLDependencyInjector.Companion.getSingleton().setOnInitializationProgressListener(
                 new LLOnProgressListener() {
@@ -158,7 +155,7 @@ public class FullscreenMapFragment extends Fragment {
                     @Override
                     public void onPOIPhoneClicked(String phone) {
                         Intent intent = new Intent(Intent.ACTION_DIAL);
-                        intent.setData(Uri.parse(phone));
+                        intent.setData(Uri.parse("tel:" + phone));
                         startActivity(intent);
                     }
                 }
@@ -185,34 +182,53 @@ public class FullscreenMapFragment extends Fragment {
 
     private void showVenue() {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
+        String venueID = "lax";
 
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then show the venue on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
-
-                String venueID = "lax";
 
                 LLVenueListEntry venueListEntry = llVenueList.get(venueID);
                 if (venueListEntry == null)  {
 
-                    // A venue loading error occurred
+                    // The venue isn't available for this account
                     return;
                 }
 
-                String llVenueAssetVersion = venueListEntry.getAssetVersion();
-                LLVenueFiles llVenueFiles = venueListEntry.getFiles();
-
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles);
+                mainHandler.post(() -> {
+                    if (getView() == null) return; // this fragment's view was destroyed in the meantime
+                    llLocusMapsFragment.showVenue(venueID, venueListEntry.getAssetVersion(), venueListEntry.getFiles());
+                });
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable);
+            }
+        }));
+    }
+
+    private void initBackHandling() {
+
+        // Let the map close its own screens (POI view, search, directions...) before the activity handles back.
+        // Registered with getViewLifecycleOwner() so the callback is removed when this fragment's view is destroyed
+        requireActivity().getOnBackPressedDispatcher().addCallback(getViewLifecycleOwner(), new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (llLocusMapsFragment.hasBackStackItems()) {
+                    llLocusMapsFragment.popBackStack();
+                } else {
+                    setEnabled(false);
+                    requireActivity().getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
             }
         });
     }
+
     private void initInitializationProgressIndicator() {
 
         initializationAnimationView.setBackgroundResource(R.drawable.ll_navigation_loading_animation);
@@ -246,18 +262,6 @@ public class FullscreenMapFragment extends Fragment {
 
             // Load complete
         }
-    }
-
-    // Custom method your activity can call to see if this fragment will handle a back press event
-    public boolean backPressHandled() {
-
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack();
-            return true;
-        }
-
-        return false;
     }
 
     private void mapReady() {

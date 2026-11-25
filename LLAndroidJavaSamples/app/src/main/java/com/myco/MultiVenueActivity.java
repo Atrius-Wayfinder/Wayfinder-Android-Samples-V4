@@ -11,6 +11,7 @@ import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
@@ -34,7 +35,8 @@ import com.locuslabs.sdk.llpublic.LLVenueList;
 import com.locuslabs.sdk.llpublic.LLVenueListEntry;
 
 import java.util.ArrayList;
-import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.FRACTION_TO_PERCENT_CONVERSION_RATIO;
 import static com.locuslabs.sdk.llpublic.LLConstantsKt.PROGRESS_BAR_FRACTION_FINISH;
@@ -48,11 +50,16 @@ public class MultiVenueActivity extends AppCompatActivity {
     private boolean mapFragmentReady;
     private ConstraintLayout mapContainer;
 
+    // Data APIs can run on a background thread (recommended)
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_multi_venue);
+
+        SampleConfig.resetToDefaults();
 
         mapContainer = findViewById(R.id.map_container);
 
@@ -63,74 +70,39 @@ public class MultiVenueActivity extends AppCompatActivity {
 
         getVenueList();
         initLocusMaps();
+        initBackHandling();
     }
 
-    @Override
-    protected void onStart() {
-
-        super.onStart();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStart();
-    }
-
-    @Override
-    protected void onStop() {
-
-        super.onStop();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onStop();
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     @Override
     protected void onDestroy() {
+
+        backgroundExecutor.shutdown();
+        SampleConfig.clearListeners();
         super.onDestroy();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onDestroy();
-    }
-
-    @Override
-    public void onLowMemory() {
-
-        super.onLowMemory();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onLowMemory();
-    }
-
-    @Override
-    public void onPause() {
-
-        super.onPause();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-
-        super.onResume();
-        if (llLocusMapsFragment != null) llLocusMapsFragment.onResume();
     }
 
     private void getVenueList() {
 
-        LLVenueDatabase llVenueDatabase = new LLVenueDatabase();
-
-        llVenueDatabase.getVenueList(new LLOnGetVenueListCallback() {
+        // Get the venue list on a background thread (recommended), then update the UI on the main thread
+        backgroundExecutor.execute(() -> new LLVenueDatabase().getVenueList(new LLOnGetVenueListCallback() {
             @Override
             public void successCallback(LLVenueList llVenueList) {
 
-                ArrayList<LLVenueListEntry> venueListEntries = new ArrayList<>();
-                for (Map.Entry<String, LLVenueListEntry> entry : llVenueList.entrySet()) {
+                ArrayList<LLVenueListEntry> venueListEntries = new ArrayList<>(llVenueList.values());
 
-                    venueListEntries.add(entry.getValue());
-                }
-
-                VenueListAdapter venueListAdapter = new VenueListAdapter(venueListEntries);
-                venueListRecyclerView.setAdapter(venueListAdapter);
+                runOnUiThread(() -> venueListRecyclerView.setAdapter(new VenueListAdapter(venueListEntries)));
             }
 
             @Override
             public void failureCallback(Throwable throwable) {
 
-                // Failed to get venue details
+                // Failed to get the venue list
                 Log.d("Error", "Failed to get venues:" +throwable.getLocalizedMessage());
             }
-        });
+        }));
     }
 
     private void initLocusMaps() {
@@ -193,7 +165,7 @@ public class MultiVenueActivity extends AppCompatActivity {
                     @Override
                     public void onPOIPhoneClicked(String phone) {
                         Intent intent = new Intent(Intent.ACTION_DIAL);
-                        intent.setData(Uri.parse(phone));
+                        intent.setData(Uri.parse("tel:" + phone));
                         startActivity(intent);
                     }
                 }
@@ -271,22 +243,31 @@ public class MultiVenueActivity extends AppCompatActivity {
         // This is the appropriate place to take most actions that affect the map
     }
 
-    @Override
-    public void onBackPressed() {
+    private void initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
 
-            llLocusMapsFragment.popBackStack();
-        }
-        else if (mapContainer.getVisibility() == View.VISIBLE) {
+                if (llLocusMapsFragment.hasBackStackItems()) {
 
-            getVenueList();
-            mapContainer.setVisibility(View.INVISIBLE);
-        }
-        else {
+                    // Let the map close its own screens (POI view, search, directions...) first
+                    llLocusMapsFragment.popBackStack();
+                }
+                else if (mapContainer.getVisibility() == View.VISIBLE) {
 
-            super.onBackPressed();
-        }
+                    // Then go back from the map to the venue list
+                    getVenueList();
+                    mapContainer.setVisibility(View.INVISIBLE);
+                }
+                else {
+
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled(true);
+                }
+            }
+        });
     }
 
     private class VenueListAdapter extends RecyclerView.Adapter<VenueListAdapter.ViewHolder> {

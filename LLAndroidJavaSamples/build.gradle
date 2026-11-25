@@ -5,7 +5,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.7.3'
+        classpath 'com.android.tools.build:gradle:8.13.0'
     }
 }
 
@@ -18,24 +18,17 @@ allprojects {
             name "GitLab"
             credentials(HttpHeaderCredentials) {
                 name = 'Deploy-Token'
-                value = gitLabDeployToken // gitLabDeployToken is a variable defined in gradle.properties, each LocusLabs customer receives their own
+                value = gitLabDeployToken // gitLabDeployToken is defined in gradle.properties; it is published by Atrius and is not a secret
             }
             authentication {
                 header(HttpHeaderAuthentication)
             }
         }
-        maven {
-            url 'https://jitpack.io'
-        }
-        maven {
-            allowInsecureProtocol = true
-            url 'http://dl.bintray.com/amulyakhare/maven'
-        }
     }
 }
 
 task clean(type: Delete) {
-    delete rootProject.buildDir
+    delete rootProject.layout.buildDirectory
 }
 
 

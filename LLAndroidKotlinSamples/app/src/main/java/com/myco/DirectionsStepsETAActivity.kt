@@ -7,13 +7,17 @@ import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.widget.ImageView
+import androidx.activity.addCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
-import com.locuslabs.sdk.llprivate.llPublicDI
+import androidx.lifecycle.lifecycleScope
 import com.locuslabs.sdk.llpublic.*
 import java.util.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class DirectionsStepsETAActivity : AppCompatActivity() {
 
@@ -28,43 +32,25 @@ class DirectionsStepsETAActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.fullscreen_map)
 
+        SampleConfig.resetToDefaults()
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground)
         initializationAnimationView = findViewById(R.id.initializationAnimationView)
 
         initLocusMaps()
+        initBackHandling()
         initInitializationProgressIndicator()
         showInitializationProgressIndicator()
     }
 
-    override fun onStart() {
-        super.onStart()
-        llLocusMapsFragment.onStart()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        llLocusMapsFragment.onPause()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        llLocusMapsFragment.onStop()
-    }
-
-    override fun onLowMemory() {
-        super.onLowMemory()
-        llLocusMapsFragment.onLowMemory()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        llLocusMapsFragment.onResume()
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     override fun onDestroy() {
+
+        SampleConfig.clearListeners()
         super.onDestroy()
-        llLocusMapsFragment.onDestroy()
     }
 
     private fun initLocusMaps() {
@@ -136,31 +122,23 @@ class DirectionsStepsETAActivity : AppCompatActivity() {
 
     private fun showVenue() {
 
-        val llVenueDatabase = LLVenueDatabase()
+        val venueID = "lax"
 
-        var venueListCallback = object : LLOnGetVenueListCallback {
-
-            override fun successCallback(venueList: LLVenueList) {
-
-                val venueID = "lax"
+        lifecycleScope.launch {
+            try {
+                // Get the venue list on a background thread (recommended), then show the venue on the main thread
+                val venueList = withContext(Dispatchers.IO) { LLVenueDatabase().getVenueList() }
 
                 val venueListEntry = venueList[venueID]
-                        ?: // A venue loading error occurred
-                        return
+                    ?: return@launch // The venue isn't available for this account
 
-                val llVenueAssetVersion = venueListEntry.assetVersion
-                val llVenueFiles = venueListEntry.files
+                llLocusMapsFragment.showVenue(venueID, venueListEntry.assetVersion, venueListEntry.files)
+            } catch (throwable: Throwable) {
 
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles)
-            }
-
-            override fun failureCallback(throwable: Throwable) {
-
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable)
             }
         }
-
-        llVenueDatabase.getVenueList(venueListCallback)
     }
 
     private fun initInitializationProgressIndicator() {
@@ -199,56 +177,62 @@ class DirectionsStepsETAActivity : AppCompatActivity() {
         }
     }
 
-    override fun onBackPressed() {
+    private fun initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack()
-        }
-        else {
-
-            super.onBackPressed()
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        onBackPressedDispatcher.addCallback(this) {
+            if (llLocusMapsFragment.hasBackStackItems()) {
+                llLocusMapsFragment.popBackStack()
+            } else {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
         }
     }
 
     private fun mapReady() {
-        
-        val securityQueueTypes: Map<String, List<String>> = HashMap()
-        val navDB = LLNavigationDatabase()
 
-        val startPoint: LLNavigationPoint = LLNavigationPointForPOI("1025")
-        val endPoint: LLNavigationPoint = LLNavigationPointForPOI("566")
+        val venueID = "lax"
+        val accessibilityType = LLNavAccessibilityType.Direct
+        val securityQueueTypes = mutableMapOf<String, List<String>>()
 
-        // Note that another signature of this method takes LLNavigationPoints in place of POI IDs. This method can also navigate from "current location" using the LLNavigationPointForCurrentLocation class
-        navDB.getDirections("lax", startPoint, endPoint, LLNavAccessibilityType.Direct, securityQueueTypes, object : LLOnGetDirectionsCallback {
-            override fun successCallback(navPath: LLNavPath) {
-                var message = """ETA(secs): ${navPath.transitTime()}
-             
-             Segments:
-             
-             
-             """.trimIndent()
-                for (segment in navPath.segments(Locale.getDefault())) {
-                    message = """
-                $message$segment
-                
-                
-                """.trimIndent()
+        // Optional - specify a security lane
+        // val laneTypes = ArrayList<String>()
+        // laneTypes.add("general") // other options include, tsapre or clear
+        // securityQueueTypes["SecurityLane"] = laneTypes
+
+        // Points can also be LLNavigationPointForCurrentLocation or any other LLNavigationPoint
+        // Note passing only a single point in waypoints is equivalent to a traditional single origin and single destination route
+        val startPoint = LLNavigationPointForPOI("1025") // Club 42 Tequila Bar & Bites
+        val waypoints = listOf(
+            LLNavigationPointForPOI("870"), // Starbucks near Gate 60
+            LLNavigationPointForPOI("566")  // Gate 77
+        )
+
+        // Fetch the route to report its steps and ETA. Data APIs can run on a background thread (recommended),
+        // then UI work is posted back to the main thread
+        lifecycleScope.launch(Dispatchers.IO) {
+            LLNavigationDatabase().getMultipointDirections(venueID, startPoint, waypoints, accessibilityType, securityQueueTypes, object : LLOnGetDirectionsCallback {
+                override fun successCallback(navPath: LLNavPath) {
+                    val steps = navPath.segments(Locale.getDefault()).joinToString("\n\n") { segment ->
+                        "%s %s (%.0f m, %.1f min)".format(segment.instruction, segment.destination, segment.distanceMeters, segment.estimatedTimeMinutes)
+                    }
+                    runOnUiThread { showDialog("Obtained Directions", "ETA: %.1f min\n\nSteps:\n\n%s".format(navPath.transitTime(), steps)) }
                 }
-                val dialog = AlertDialog.Builder(this@DirectionsStepsETAActivity)
-                dialog.setMessage(message)
-                dialog.setTitle("Obtained Directions")
-                dialog.setPositiveButton("OK", null)
-                dialog.create().show()
-            }
 
-            override fun failureCallback(throwable: Throwable) {
-                val dialog = AlertDialog.Builder(this@DirectionsStepsETAActivity)
-                dialog.setMessage(throwable.localizedMessage)
-                dialog.setTitle("Directions Error")
-                dialog.setPositiveButton("OK", null)
-                dialog.create().show()
-            }
-        })
+                override fun failureCallback(throwable: Throwable) {
+                    runOnUiThread { showDialog("Directions Error", throwable.localizedMessage.orEmpty()) }
+                }
+            })
+        }
+    }
+
+    private fun showDialog(title: String, message: String) {
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
     }
 }

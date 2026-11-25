@@ -7,11 +7,16 @@ import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.widget.ImageView
+import androidx.activity.addCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
+import androidx.lifecycle.lifecycleScope
 import com.locuslabs.sdk.llpublic.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 class VenueDataActivity : AppCompatActivity() {
@@ -27,43 +32,25 @@ class VenueDataActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.fullscreen_map)
 
+        SampleConfig.resetToDefaults()
+
         // Reference views
         initializationAnimationViewBackground = findViewById(R.id.initializationAnimationViewBackground)
         initializationAnimationView = findViewById(R.id.initializationAnimationView)
 
         initLocusMaps()
+        initBackHandling()
         initInitializationProgressIndicator()
         showInitializationProgressIndicator()
     }
 
-    override fun onStart() {
-        super.onStart()
-        llLocusMapsFragment.onStart()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        llLocusMapsFragment.onPause()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        llLocusMapsFragment.onStop()
-    }
-
-    override fun onLowMemory() {
-        super.onLowMemory()
-        llLocusMapsFragment.onLowMemory()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        llLocusMapsFragment.onResume()
-    }
+    // Note: there is no need to forward lifecycle events (onStart, onResume, onPause, onStop,
+    // onDestroy, onLowMemory) to LLLocusMapsFragment, the fragment handles them itself
 
     override fun onDestroy() {
+
+        SampleConfig.clearListeners()
         super.onDestroy()
-        llLocusMapsFragment.onDestroy()
     }
 
     private fun initLocusMaps() {
@@ -135,31 +122,23 @@ class VenueDataActivity : AppCompatActivity() {
 
     private fun showVenue() {
 
-        val llVenueDatabase = LLVenueDatabase()
+        val venueID = "lax"
 
-        var venueListCallback = object : LLOnGetVenueListCallback {
-
-            override fun successCallback(venueList: LLVenueList) {
-
-                val venueID = "lax"
+        lifecycleScope.launch {
+            try {
+                // Get the venue list on a background thread (recommended), then show the venue on the main thread
+                val venueList = withContext(Dispatchers.IO) { LLVenueDatabase().getVenueList() }
 
                 val venueListEntry = venueList[venueID]
-                        ?: // A venue loading error occurred
-                        return
+                    ?: return@launch // The venue isn't available for this account
 
-                val llVenueAssetVersion = venueListEntry.assetVersion
-                val llVenueFiles = venueListEntry.files
+                llLocusMapsFragment.showVenue(venueID, venueListEntry.assetVersion, venueListEntry.files)
+            } catch (throwable: Throwable) {
 
-                llLocusMapsFragment.showVenue(venueID, llVenueAssetVersion, llVenueFiles)
-            }
-
-            override fun failureCallback(throwable: Throwable) {
-
-                // Failed to get venue details
+                // Failed to get the venue list
+                Log.e("LOG", "Failed to get the venue list", throwable)
             }
         }
-
-        llVenueDatabase.getVenueList(venueListCallback)
     }
 
     private fun initInitializationProgressIndicator() {
@@ -198,96 +177,105 @@ class VenueDataActivity : AppCompatActivity() {
         }
     }
 
-    override fun onBackPressed() {
+    private fun initBackHandling() {
 
-        if (llLocusMapsFragment.hasBackStackItems()) {
-
-            llLocusMapsFragment.popBackStack()
-        }
-        else {
-
-            super.onBackPressed()
+        // Let the map close its own screens (POI view, search, directions...) before leaving this screen
+        onBackPressedDispatcher.addCallback(this) {
+            if (llLocusMapsFragment.hasBackStackItems()) {
+                llLocusMapsFragment.popBackStack()
+            } else {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
         }
     }
 
     private fun mapReady() {
 
+        getPOIs()
         getVenues()
         getVenueDetails("lax")
     }
 
+    // Data APIs can run on a background thread (recommended), then UI work is posted back to the main thread
+
     private fun getVenues() {
 
-        val venueDB = LLVenueDatabase()
-        venueDB.getVenueList(object : LLOnGetVenueListCallback {
-            override fun successCallback(venueList: LLVenueList) {
-                var message = ""
-                for (venueID in venueList.keys) {
-                    message = """
-                $message${venueList[venueID]!!.name}
-                
-                """.trimIndent()
-                }
-                val dialog = AlertDialog.Builder(this@VenueDataActivity)
-                dialog.setMessage(message)
-                dialog.setTitle("Account venues: (" + venueList.size.toString() + ")")
-                dialog.setPositiveButton("OK", null)
-                dialog.create().show()
-            }
+        lifecycleScope.launch {
+            try {
+                // LLVenueDatabase.getVenueList() also has a suspend version
+                val venueList = withContext(Dispatchers.IO) { LLVenueDatabase().getVenueList() }
 
-            override fun failureCallback(throwable: Throwable) {}
-        })
+                val message = venueList.values.joinToString("\n") { venueListEntry -> venueListEntry.name }
+                showDialog("Account venues: (${venueList.size})", message)
+            } catch (throwable: Throwable) {
+                Log.e("Error", "Error getting venues", throwable)
+            }
+        }
     }
 
     private fun getPOIs() {
         val llpoiDatabase = LLPOIDatabase()
-        llpoiDatabase.getPOIList("lax", object : LLOnGetPOIListCallback {
-            override fun successCallback(list: List<LLPOI>) {
-                for (poi in list) {
-                    Log.d("POI", poi.name + ", " + poi.id)
+        lifecycleScope.launch(Dispatchers.IO) {
+            llpoiDatabase.getPOIList("lax", object : LLOnGetPOIListCallback {
+                override fun successCallback(pois: List<LLPOI>) {
+                    for (poi in pois) {
+                        Log.d("POI", poi.name + ", " + poi.id)
+                    }
                 }
-            }
 
-            override fun failureCallback(throwable: Throwable) {
-                Log.d("Error", "Error getting pois: " + throwable.localizedMessage)
-            }
-        })
+                override fun failureCallback(throwable: Throwable) {
+                    Log.d("Error", "Error getting pois: " + throwable.localizedMessage)
+                }
+            })
+        }
     }
 
     private fun getPOI(poiID: String) {
         val llpoiDatabase = LLPOIDatabase()
-        llpoiDatabase.getPOIDetails("lax", poiID, object : LLOnGetPOIDetailsCallback {
+        lifecycleScope.launch(Dispatchers.IO) {
+            llpoiDatabase.getPOIDetails("lax", poiID, object : LLOnGetPOIDetailsCallback {
 
-            override fun successCallback(llpoi: LLPOI) {
-                Log.d("POI", llpoi.name + ", " + llpoi.id)
-            }
+                override fun successCallback(poi: LLPOI) {
+                    Log.d("POI", poi.name + ", " + poi.id)
+                }
 
-            override fun failureCallback(throwable: Throwable) {
-                Log.d("Error", "Error getting pois: " + throwable.localizedMessage)
-            }
-        })
+                override fun failureCallback(throwable: Throwable) {
+                    Log.d("Error", "Error getting poi: " + throwable.localizedMessage)
+                }
+            })
+        }
     }
 
     private fun getVenueDetails(venueID: String) {
         val venueDB = LLVenueDatabase()
-        venueDB.getVenueDetails(venueID, object : LLOnGetVenueDetailsCallback {
-            override fun successCallback(venue: LLVenue) {
-                var message = ""
-                venue.buildings.forEach { building ->
-                    message += "Building id: $building.id name: $building.name\n"
-                    building.levels.forEach { level ->
-                        message += "\t"
-                        message += "Floor id: $level.id level: $level.ordinal\n"
+        lifecycleScope.launch(Dispatchers.IO) {
+            venueDB.getVenueDetails(venueID, object : LLOnGetVenueDetailsCallback {
+                override fun successCallback(venue: LLVenue) {
+                    var message = ""
+                    venue.buildings.forEach { building ->
+                        message += "Building id: ${building.id} name: ${building.name}\n"
+                        building.levels.forEach { level ->
+                            message += "\t"
+                            message += "Floor id: ${level.id} level: ${level.ordinal}\n"
+                        }
                     }
+                    runOnUiThread { showDialog("LAX venue details:", message) }
                 }
-                val dialog = AlertDialog.Builder(this@VenueDataActivity)
-                dialog.setMessage(message)
-                dialog.setTitle("LAX venue details:")
-                dialog.setPositiveButton("OK", null)
-                dialog.create().show()
-            }
 
-            override fun failureCallback(throwable: Throwable) {}
-        })
+                override fun failureCallback(throwable: Throwable) {
+                    Log.d("Error", "Error getting venue details: " + throwable.localizedMessage)
+                }
+            })
+        }
+    }
+
+    private fun showDialog(title: String, message: String) {
+        val dialog = AlertDialog.Builder(this)
+        dialog.setMessage(message)
+        dialog.setTitle(title)
+        dialog.setPositiveButton("OK", null)
+        dialog.create().show()
     }
 }
